@@ -1,0 +1,294 @@
+---
+title: "skinny_questions"
+output: html_document
+---
+
+```{r}
+rm(list = ls())
+
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(readr)
+
+# 1. Read the CSV
+claire_skinny_dorsals_in_ <- read_csv("data/claire_skinny_dorsals(in).csv")
+
+# 2. Clean and subset
+df_subset <- claire_skinny_dorsals_in_ %>%
+  # Make the column names easier to use
+  rename(
+    Keyword_export = `Keyword-export`,
+    Date_Time      = `Date Time`
+  ) %>%
+  # Make sure the key columns are plain character before using them
+  mutate(
+    Keyword_export = as.character(Keyword_export),
+    Date_Time      = as.character(Date_Time)
+  ) %>%
+  # Derive Sex, Age, and parse Date_Time
+  mutate(
+    Sex = dplyr::case_when(
+      str_detect(Keyword_export, "Male")    ~ "Male",
+      str_detect(Keyword_export, "FemaleJ") ~ "FemaleJ",
+      TRUE                                  ~ NA_character_
+    ),
+    Age = dplyr::case_when(
+      str_detect(Keyword_export, regex("juv/calf", ignore_case = TRUE)) ~ "Juvenile/Calf",
+      str_detect(Keyword_export, regex("juv",      ignore_case = TRUE)) ~ "Juvenile",
+      str_detect(Keyword_export, regex("calf",     ignore_case = TRUE)) ~ "Calf",
+      TRUE                                                              ~ "Adult"
+    ),
+    Date_Time = mdy_hm(Date_Time, quiet = TRUE)
+  ) %>%
+  select(Title, Sex, Age, Date_Time)
+
+# Quick check
+head(df_subset)
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(readr)
+
+df <- read_csv("data/claire_skinny_dorsals(in).csv",
+               show_col_types = FALSE) %>%
+  rename(
+    Keyword_export = `Keyword-export`,
+    Date_Time      = `Date Time`
+  )
+
+
+# Per-photo data with Skinny flag
+df_subset <- df %>%
+  mutate(
+    Sex = case_when(
+      str_detect(Keyword_export, "Male")    ~ "Male",
+      str_detect(Keyword_export, "FemaleJ") ~ "FemaleJ",
+      TRUE                                  ~ NA_character_
+    ),
+    Age = case_when(
+      str_detect(Keyword_export,
+                 regex("juv\\s*/\\s*calf|jut\\s*/\\s*calf",
+                       ignore_case = TRUE)) ~ "Juvenile/Calf",
+      str_detect(Keyword_export,
+                 regex("calf", ignore_case = TRUE)) ~ "Calf",
+      str_detect(Keyword_export,
+                 regex("juv",  ignore_case = TRUE)) ~ "Juvenile",
+      TRUE ~ "Adult"
+    ),
+    Skinny = if_else(
+      str_detect(Keyword_export,
+                 regex("claire_skinny", ignore_case = TRUE)),
+      "Yes", "No"
+    ),
+    Date_Time = as.Date(mdy_hm(Date_Time, quiet = TRUE)),
+    Date      = Date_Time
+  ) %>%
+  select(Title, Sex, Age, Skinny, Date_Time, Date)
+
+# One row per whale per day
+df_daily <- df_subset %>%
+  group_by(Title, Date) %>%
+  summarise(
+    Sex    = first(na.omit(Sex), default = NA_character_),
+    Age    = first(na.omit(Age), default = NA_character_),
+    Skinny = if_else(any(Skinny == "Yes", na.rm = TRUE),
+                     "Yes", "No"),
+    .groups = "drop"
+  ) %>%
+  transmute(Title, Sex, Age, Skinny, Date_Time = Date)
+
+head(df_daily)
+
+write.csv(df_daily, "df_daily_cleaned.csv", row.names = FALSE)
+
+
+```
+
+
+add year column
+```{r}
+library(lubridate)
+
+df_daily <- df_daily %>%
+  dplyr::mutate(Year = year(Date_Time))
+
+write.csv(df_daily, "df_daily.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+table(df_daily$Skinny)
+
+str(df_daily$Sex)
+df_daily$Sex <- factor(df_daily$Sex)
+
+table(df_daily$Sex, df_daily$Skinny)
+
+
+```
+
+bodyCondition ~ sex + (1|Year)
+```{r}
+library(lme4)
+
+# Convert Skinny to a binary factor (1 = Yes, 0 = No)
+df_daily$Skinny <- ifelse(df_daily$Skinny == "Yes", 1, 0)
+
+mod1 <- glmer(Skinny ~ Sex + (1 | Year),
+              data = df_daily,
+              family = binomial)
+summary(mod1)
+
+
+
+
+```
+
+in the above output suggests there are some variability among years-some years likely have more skinny individuals than others
+
+checked to make sure every year in teh y axis was accounted for in the df dataset-it is, however there are a couple of years with not many whales-a mistake maybe? 2009 2008 1991 1988
+
+The red lines indicate a lower than average probability of whales being detected as skinny
+Blue lines indicate higher than average probability of whales being detected as skinny
+
+```{r}
+ranef(mod1)$Year
+
+#install.packages("sjPlot")
+library(sjPlot)
+plot_model(mod1, type = "re", sort.est = TRUE)
+
+```
+
+trying to fit the effect as a GAM
+-unsure if i did it right or what im looking for?
+```{r}
+library(mgcv)
+
+gam_year <- gam(Skinny ~ s(Year, k = 5),
+                data   = df_daily,
+                family = binomial,
+                method = "REML")
+summary(gam_year)
+plot(gam_year, pages = 1)
+
+
+```
+
+
+skinnyness as an indicator of health--> if skinny is it the last year seen?-->modelling dissapearance
+```{r}
+rm(list = ls())
+
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(readr)
+
+# 1. Read the original Lightroom export
+df <- read_csv("data/claire_skinny_dorsals(in).csv",
+               show_col_types = FALSE) %>%
+  rename(
+    Keyword_export = `Keyword-export`,
+    Date_Time      = `Date Time`
+  )
+
+# 2. Add Skinny flag and Year column
+df2 <- df %>%
+  mutate(
+    Skinny = str_detect(Keyword_export, regex("skinny", ignore_case = TRUE)),
+    Date_Time = mdy_hm(Date_Time, quiet = TRUE),
+    Year = year(Date_Time)
+  )
+
+# 3. Table of all whales that were skinny & the year(s) they were skinny
+skinny_whales <- df2 %>%
+  filter(Skinny) %>%
+  distinct(Title, Year)
+
+# 4. Table of each whale's LAST year seen (from the full dataset)
+last_year_seen <- df2 %>%
+  group_by(Title) %>%
+  summarise(last_year_seen = max(Year, na.rm = TRUE), .groups = "drop")
+
+# 5. Add the last-year-seen info to the skinny whale table
+skinny_with_last <- skinny_whales %>%
+  left_join(last_year_seen, by = "Title") %>%
+  arrange(Title, Year)
+
+# 6. View results
+View(skinny_with_last)
+
+write_csv(skinny_with_last, "skinny_whales_with_last_year.csv")
+
+
+```
+
+count where year == year_last_seen
+
+also calculate proportion of whales who dissapear from catalogue while skinny
+```{r}
+sum(skinny_with_last$Year == skinny_with_last$last_year_seen, na.rm = TRUE)
+
+mean(skinny_with_last$Year == skinny_with_last$last_year_seen)
+
+
+```
+
+
+
+average number of social partners of skinny whales
+-each whale counted once per year
+-doubles possible-consider that whales may recover 
+```{r}
+library(dplyr)
+
+skinny_social <- merged_df %>%
+  group_by(Title, Year) %>%
+  summarise(
+    # was this whale ever labelled skinny in this year?
+    Skinny_year = any(Skinny == "Yes", na.rm = TRUE),
+
+    # social metrics (constant within Title–Year, so just take first)
+    Degree   = first(Degree),
+    Strength = first(Strength),
+    .groups = "drop"
+  )
+
+avg_social_skinny <- skinny_social %>%
+  filter(Skinny_year) %>%
+  summarise(
+    n_whale_years = n(),
+    mean_degree   = mean(Degree,   na.rm = TRUE),
+    sd_degree     = sd(Degree,     na.rm = TRUE),
+    mean_strength = mean(Strength, na.rm = TRUE)
+  )
+
+avg_social_skinny
+
+avg_social_nonskinny <- skinny_social %>%
+  filter(!Skinny_year) %>%
+  summarise(
+    n_whale_years = n(),
+    mean_degree   = mean(Degree,   na.rm = TRUE),
+    sd_degree     = sd(Degree,     na.rm = TRUE),
+    mean_strength = mean(Strength, na.rm = TRUE)
+  )
+
+avg_social_nonskinny
+
+
+```
+
+
+
+
+
+maybe use associated_entries from NBW to determine group size?
+

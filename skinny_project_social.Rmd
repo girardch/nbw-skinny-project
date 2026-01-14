@@ -1,0 +1,1448 @@
+---
+title: "social_skinny"
+output: html_document
+---
+
+```{r}
+library(readr)
+final_merged_table <- read_csv("final_merged_table.csv")
+#View(final_merged_table)
+
+library(readr)
+df_daily <- read_csv("df_daily.csv")
+#View(df_daily)
+```
+
+
+```{r}
+library(dplyr)
+library(lubridate)
+
+final_merged_table <- final_merged_table %>%
+  mutate(Title = as.character(Title))
+
+merged_df <- df_daily %>%
+  left_join(final_merged_table, by = c("Title", "Year"))
+
+# Add Year to daily condition data
+df_daily <- df_daily %>%
+  mutate(Year = year(Date_Time))
+
+# Merge social metrics by Title-Year
+merged_df <- df_daily %>%
+  left_join(final_merged_table, by = c("Title", "Year"))
+
+head(merged_df)
+
+#write_csv(merged_df, "merged_df.csv")
+
+
+
+```
+
+
+
+degree
+```{r}
+# --- Clean DHARMa diagnostics without test annotations -----------------
+
+library(DHARMa)
+
+# Simulate residuals (no refit)
+res_nb <- simulateResiduals(m_deg_nb, n = 1000, refit = FALSE)
+
+# Predicted values on response scale; keep NA alignment identical
+fit_nb <- predict(m_deg_nb, type = "response", na.action = na.exclude)
+
+# Build a clean index with no NAs in residuals or fitted
+res_vec <- res_nb$scaledResiduals
+idx <- is.finite(res_vec) & is.finite(fit_nb)
+
+u    <- res_vec[idx]                 # DHARMa scaled residuals ~ U(0,1)
+fit  <- fit_nb[idx]
+n    <- length(u)
+theo <- (1:n) / (n + 1)              # expected Uniform(0,1) quantiles
+xf   <- rank(fit, ties.method = "average") / (n + 1)  # rank-transformed fits
+
+# Optional predictor for panel 4 (e.g., PropSkinny); drop NAs to match
+PropSkinny <- df_deg$PropSkinny      # <-- use your data frame that matches model
+PropSkinny <- PropSkinny[idx]
+
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+## 1) QQ plot (no tests / labels)
+plot(theo, sort(u), xlab = "Expected (Uniform[0,1])",
+     ylab = "Observed", main = "QQ plot residuals", pch = 16, cex = 0.5)
+abline(0, 1, lty = 2)
+
+## 2) Residual histogram (plain)
+hist(u, breaks = max(20, floor(sqrt(n))), xlab = "Scaled residuals",
+     main = "Residual histogram")
+
+## 3) Residuals vs fitted (rank-transformed x to mimic DHARMa)
+plot(xf, u, xlab = "Fitted (rank transformed)",
+     ylab = "DHARMa residual", main = "Residuals vs Fitted",
+     pch = 16, cex = 0.5)
+# Optional smooth (comment out if you don’t want it)
+# lines(lowess(xf, u, f = 2/3), col = "red", lwd = 2)
+
+## 4) Residuals vs PropSkinny (or any predictor)
+plot(PropSkinny, u, xlab = "PropSkinny",
+     ylab = "DHARMa residual", main = "Residuals vs PropSkinny",
+     pch = 16, cex = 0.5)
+# lines(lowess(PropSkinny, u, f = 2/3), col = "red", lwd = 2)
+
+par(op)
+
+
+```
+
+very significant breaches in assumptions for residuals, try zero inflated NB
+
+```{r}
+library(glmmTMB)
+library(DHARMa)
+
+# Fit
+m_deg_zinb <- glmmTMB(
+  Degree ~ Skinny + (1|Title) + (1|Year),
+  ziformula = ~ 1,
+  data = merged_df,
+  family = nbinom2()
+)
+summary(m_deg_zinb)
+
+# DHARMa sims
+res_zinb <- simulateResiduals(m_deg_zinb, n = 1000)
+
+# Predicted values on response scale (handle NAs same way as DHARMa)
+fit_zinb <- predict(m_deg_zinb, type = "response", na.action = na.exclude)
+
+# Base residuals (Pearson are usually most useful here)
+raw_res  <- residuals(m_deg_zinb, type = "pearson")
+
+# Keep only rows present in both vectors
+ii <- complete.cases(fit_zinb, raw_res)
+
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+## 1) QQ plot (no test text)
+DHARMa::plotQQunif(
+  simulationOutput = res_zinb,
+  testUniformity = FALSE, testOutliers = FALSE, testDispersion = FALSE,
+  main = "QQ plot residuals"
+)
+
+## 2) Histogram of scaled residuals
+hist(res_zinb$scaledResiduals, breaks = 30,
+     main = "Residual histogram", xlab = "Scaled residuals")
+
+## 3) Base residuals vs fitted (clean)
+plot(fit_zinb[ii], raw_res[ii],
+     xlab = "Fitted values", ylab = "Pearson residuals",
+     main = "Residuals vs Fitted (base)")
+abline(h = 0, lty = 2)
+
+## 4) DHARMa residuals vs fitted (no smoothing / quantile bands)
+DHARMa::plotResiduals(
+  res_zinb, form = fit_zinb,
+  quantreg = FALSE, smooth = FALSE,
+  main = "DHARMa residuals vs fitted"
+)
+
+par(op)
+
+
+
+```
+
+trying a different variance structure
+```{r}
+# --- Diagnostics for m_deg_nb1 without p-value text -------------------------
+library(DHARMa)
+
+# simulate DHARMa residuals
+res_nb1 <- simulateResiduals(m_deg_nb1, n = 1000)
+
+# fitted values on response scale (align NA handling with DHARMa)
+fit_nb1 <- predict(m_deg_nb1, type = "response", na.action = na.exclude)
+
+# set panel
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+## (1) QQ plot (manual; no tests/labels)
+u  <- sort(res_nb1$scaledResiduals)
+e  <- ppoints(length(u))                     # expected Uniform(0,1) quantiles
+plot(e, u, xlab = "Expected", ylab = "Observed",
+     main = "QQ plot residuals", pch = 16, cex = 0.6)
+abline(0, 1, col = "grey60", lwd = 2)
+
+## (2) Histogram of DHARMa residuals
+hist(res_nb1$scaledResiduals, breaks = 30,
+     main = "Residual histogram", xlab = "Scaled residuals")
+
+## (3) Residuals vs fitted (DHARMa residuals; no overlays)
+plot(fit_nb1, res_nb1$scaledResiduals, pch = 16, cex = 0.5,
+     xlab = "Fitted values", ylab = "DHARMa residual",
+     main = "Residuals vs Fitted")
+abline(h = 0.5, col = "grey60", lty = 2)     # expected median for uniform res
+
+## (4) Standardized Pearson residuals vs fitted (classic look)
+pr_nb1 <- residuals(m_deg_nb1, type = "pearson")
+plot(fit_nb1, pr_nb1, pch = 16, cex = 0.5,
+     xlab = "Fitted values", ylab = "Pearson residual",
+     main = "Pearson residuals vs Fitted")
+abline(h = 0, col = "grey60", lty = 2)
+
+par(op)
+
+```
+
+Try log-transform + Gaussian LMM (robust alternative)
+```{r}
+library(lme4)
+merged_df$logDegree <- log1p(merged_df$Degree)
+
+m_deg_lmm <- lmer(logDegree ~ Skinny + (1|Title) + (1|Year), data = merged_df)
+sim_lmm <- simulateResiduals(m_deg_lmm, n = 1000)
+plot(sim_lmm)
+
+
+
+```
+
+
+Test a Tweedie model (for flexible mean–variance relationships)
+```{r}
+#install.packages("tweedie")
+library(tweedie)
+library(glmmTMB)
+
+m_deg_tweedie <- glmmTMB(Degree ~ Skinny + (1|Title) + (1|Year),
+                         data = merged_df, family = tweedie(link="log"))
+plot(simulateResiduals(m_deg_tweedie, n = 1000))
+
+
+
+```
+
+
+examine random effects structure
+```{r}
+m_deg_nb_slope <- glmmTMB(Degree ~ Skinny + (1 + Skinny | Title) + (1|Year),
+                          data = merged_df, family = nbinom2())
+plot(simulateResiduals(m_deg_nb_slope, n = 1000))
+
+
+
+```
+
+Identify and inspect influential cases
+```{r}
+# Get the dataset actually used in the model
+dat_used <- model.frame(m_deg_nb)
+
+# Check column names in that dataset
+names(dat_used)
+
+# Use the matching predictor (Degree) from this cleaned data frame
+plotResiduals(res, dat_used$Degree)
+
+
+```
+
+If none of Poisson, NB1, NB2, zero-inflated, Tweedie, or Gaussian models produce well-behaved residuals, there are two likely possibilities:
+1️⃣ Structural non-independence
+Even though you included (1|Title) and (1|Year), individuals are observed many times within a year, and your response (Degree) is constant within a Title–Year combination.
+→ The model is probably over-weighting those repeated daily rows (since all 10+ daily entries for the same whale/year share the same Degree).
+This inflates sample size and violates the residual independence assumption.
+✅ Fix: collapse the dataset to one row per individual per year for these social metrics, then merge the proportion of “Skinny” days instead of each daily entry.
+That makes the scales match — one social value per condition summary.
+```{r}
+library(dplyr)
+library(glmmTMB)
+library(DHARMa)
+
+# 1) Clean up duplicated columns from the join
+dat <- merged_df %>%
+  mutate(
+    Sex_join = dplyr::coalesce(Sex.x, Sex.y),
+    Age_join = dplyr::coalesce(Age, Age_Class)
+  )
+
+# helper to grab first non-NA safely
+first_non_na <- function(x) {
+  x2 <- x[!is.na(x)]
+  if (length(x2)) x2[1] else NA
+}
+
+# 2) Collapse to one row per Title-Year and compute PropSkinny
+df_yearly <- dat %>%
+  group_by(Title, Year) %>%
+  summarise(
+    Degree      = first_non_na(Degree),
+    Strength    = first_non_na(Strength),
+    Betweenness = first_non_na(Betweenness),
+    Eigenvector = first_non_na(Eigenvector),
+    Sex         = first_non_na(Sex_join),
+    Age         = first_non_na(Age_join),
+    PropSkinny  = if (all(is.na(Skinny))) NA_real_ else mean(Skinny == "Yes", na.rm = TRUE),
+    n_days      = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Title = factor(Title),
+    Year  = factor(Year)
+  )
+
+# (optional sanity checks)
+# table(is.na(df_yearly$Degree))
+# summary(df_yearly$PropSkinny)
+# head(df_yearly, 10)
+
+# 3) Fit yearly model (counts -> NB). You can add Sex/Age as controls if you like.
+m_deg_nb_yr <- glmmTMB(
+  Degree ~ PropSkinny + (1 | Title) + (1 | Year),
+  data = df_yearly,
+  family = nbinom2()
+)
+
+summary(m_deg_nb_yr)
+
+library(DHARMa)
+
+res <- simulateResiduals(m_deg_nb_yr, n = 1000, refit = FALSE)
+
+fit <- predict(m_deg_nb_yr, type = "response", na.action = na.exclude)
+
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]
+fit <- fit[idx]
+n   <- length(u)
+
+theo <- (1:n) / (n + 1)
+xf   <- rank(fit) / (n + 1)
+
+mf <- model.frame(m_deg_nb_yr)
+PropSkinny <- mf$PropSkinny[idx]
+
+op <- par(mfrow = c(2,2), mar = c(4,4,2,1))
+
+# 1) QQ
+plot(theo, sort(u), pch=16, cex=.7,
+     xlab="Expected U(0,1)", ylab="Observed",
+     main="QQ plot residuals")
+abline(0,1,lty=2)
+
+# 2) Histogram
+hist(u, breaks=20, xlab="Scaled residuals", main="Residual histogram")
+
+# 3) Residuals vs fitted
+plot(xf, u, pch=16, cex=.7,
+     xlab="Fitted (rank)", ylab="DHARMa residual",
+     main="Residuals vs Fitted")
+abline(h=.5, lty=2)
+
+# 4) Residuals vs PropSkinny
+plot(PropSkinny, u, pch=16, cex=.7,
+     xlab="PropSkinny", ylab="DHARMa residual",
+     main="Residuals vs PropSkinny")
+abline(h=.5, lty=2)
+
+par(op)
+
+
+```
+
+
+
+(Stronger) modelling suggestion: model the proportion properly
+Right now Degree is yearly and PropSkinny is a proportion. A very clean alternative is to flip the response to the counts of skinny days and use a (beta-)binomial with trials = total days. This (a) uses the right likelihood for a proportion, (b) weights years with more observations appropriately, and (c) often fixes DHARMa issues.
+
+
+```{r}
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# Make the yearly body-condition predictor
+df_deg <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Degree), !is.na(PropSkinny), n_days > 0)
+
+# Option A (recommended): include effort as an offset (log link scale)
+m_deg_nb_off <- glmmTMB(
+  Degree ~ PropSkinny + (1|Title) + (1|Year),
+  offset = log(n_days),               # controls for unequal days seen
+  data   = df_deg,
+  family = nbinom2()
+)
+
+summary(m_deg_nb_off)
+res_off <- simulateResiduals(m_deg_nb_off, n = 1000); plot(res_off)
+
+library(DHARMa)
+
+# 1. Simulate DHARMa residuals (no refit)
+res <- simulateResiduals(m_deg_nb_off, n = 1000, refit = FALSE)
+
+# 2. Fitted values on response scale
+fit <- predict(m_deg_nb_off, type = "response", na.action = na.exclude)
+
+# 3. Extract residual vector
+u   <- res$scaledResiduals
+
+# 4. Align lengths (removes NA rows if any)
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]
+fit <- fit[idx]
+n   <- length(u)
+
+# 5. Expected Uniform(0,1) quantiles for QQ
+theo <- (1:n) / (n + 1)
+
+# 6. Rank-transformed fitted for smooth x-axis
+xf <- rank(fit, ties.method = "average") / (n + 1)
+
+# 7. Pull the predictor from the model frame (ensures perfect alignment)
+mf <- model.frame(m_deg_nb_off)
+PropSkinny <- mf$PropSkinny[idx]
+
+# ----- 4-panel diagnostic plots -----
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+## (1) QQ plot — **no tests printed**
+plot(theo, sort(u),
+     xlab = "Expected U(0,1)", ylab = "Observed",
+     main = "QQ plot residuals", pch = 16, cex = 0.6)
+abline(0, 1, lty = 2, col = "grey50")
+
+## (2) Histogram
+hist(u, breaks = max(20, floor(sqrt(n))),
+     xlab = "Scaled residuals",
+     main = "Residual histogram",
+     col = "grey85", border = "white")
+
+## (3) Residuals vs fitted
+plot(xf, u,
+     xlab = "Fitted (rank transformed)",
+     ylab = "DHARMa residual",
+     main = "Residuals vs Fitted",
+     pch = 16, cex = 0.6)
+abline(h = 0.5, lty = 2, col = "grey60")
+
+## (4) Residuals vs PropSkinny
+plot(PropSkinny, u,
+     xlab = "PropSkinny",
+     ylab = "DHARMa residual",
+     main = "Residuals vs PropSkinny",
+     pch = 16, cex = 0.6)
+abline(h = 0.5, lty = 2, col = "grey60")
+
+par(op)
+
+
+
+```
+
+likelihood ratio for degree model
+```{r}
+library(glmmTMB)
+
+# Full model (you already have this)
+m_deg_nb_off <- glmmTMB(
+  Degree ~ PropSkinny + (1|Title) + (1|Year),
+  offset = log(n_days),
+  data   = df_deg,
+  family = nbinom2()
+)
+
+# Null model: same random effects + offset, but no PropSkinny
+m_deg_nb_off_null <- glmmTMB(
+  Degree ~ 1 + (1|Title) + (1|Year),
+  offset = log(n_days),
+  data   = df_deg,
+  family = nbinom2()
+)
+anova(m_deg_nb_off_null, m_deg_nb_off)
+
+
+
+
+
+```
+
+
+
+```{r}
+library(ggplot2)
+library(glmmTMB)
+library(DHARMa)
+library(ggeffects)
+
+# Predicted marginal effects (fixed effects only)
+pred_deg <- ggpredict(m_deg_nb_off, terms = "PropSkinny")
+
+# Plot
+ggplot(pred_deg, aes(x = x, y = predicted)) +
+  geom_line(size = 1.2, colour = "#006699") +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), 
+              alpha = 0.2, fill = "#006699") +
+  labs(
+    x = "Proportion of days classified as skinny",
+    y = "Predicted Degree (expected count)",
+    title = "Predicted Degree as a Function of Body Condition"
+  ) +
+  theme_minimal(base_size = 16)
+
+
+
+
+```
+
+
+Eigenvector centrality ~ body condition
+```{r}
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# --- Build analysis data ------------------------------------------------------
+df_cent <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    # Beta needs (0,1); nudge exact 0/1 slightly inward
+    Eigen_beta = pmin(pmax(Eigenvector, 1e-6), 1 - 1e-6),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Eigen_beta), !is.na(PropSkinny), n_days > 0)
+
+# --- Fit beta mixed model (logit), weight by effort --------------------------
+m_eig_beta <- glmmTMB(
+  Eigen_beta ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_cent,
+  family  = beta_family(link = "logit"),
+  weights = n_days
+)
+
+summary(m_eig_beta)
+
+# --- Clean 4-panel residual diagnostics (no printed tests) -------------------
+# 1) Simulated DHARMa residuals, no refit
+res <- simulateResiduals(m_eig_beta, n = 1000, refit = FALSE)
+
+# 2) Fitted values on response scale (same length handling as DHARMa)
+fit <- predict(m_eig_beta, type = "response", na.action = na.exclude)
+
+# 3) Extract residual vector and align lengths
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]
+fit <- fit[idx]
+n   <- length(u)
+
+# 4) Expected U(0,1) quantiles and rank-transformed fitted (for smooth x-axis)
+theo <- (1:n) / (n + 1)
+xf   <- rank(fit, ties.method = "average") / (n + 1)
+
+# 5) Pull predictor from model frame so indexing matches exactly
+mf <- model.frame(m_eig_beta)
+PropSkinny <- mf$PropSkinny[idx]
+
+# ---- Plot (4 panels) ----
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+## (1) QQ plot
+plot(theo, sort(u),
+     xlab = "Expected U(0,1)", ylab = "Observed",
+     main = "QQ plot residuals", pch = 16, cex = 0.6)
+abline(0, 1, lty = 2, col = "grey60")
+
+## (2) Histogram
+hist(u, breaks = max(20, floor(sqrt(n))),
+     xlab = "Scaled residuals",
+     main = "Residual histogram",
+     col = "grey85", border = "white")
+
+## (3) Residuals vs fitted
+plot(xf, u,
+     xlab = "Fitted (rank transformed)",
+     ylab = "DHARMa residual",
+     main = "Residuals vs Fitted",
+     pch = 16, cex = 0.6)
+abline(h = 0.5, lty = 2, col = "grey60")
+
+## (4) Residuals vs PropSkinny
+plot(PropSkinny, u,
+     xlab = "PropSkinny",
+     ylab = "DHARMa residual",
+     main = "Residuals vs PropSkinny",
+     pch = 16, cex = 0.6)
+abline(h = 0.5, lty = 2, col = "grey60")
+
+par(op)
+
+
+```
+
+terrible fit! try another model to explore eignevector
+Zero inflated beta GLMM (GLMMTMB)
+```{r}
+
+# ===== Eigenvector ~ PropSkinny : Zero-inflated Beta =====
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# Build analysis df from your df_bc (has y_skinny, n_days, Eigenvector, etc.)
+df_zib <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    # Keep true zeros (ZI handles them); nudge exact 1s slightly inward
+    Eigen_beta = ifelse(Eigenvector == 1, 1 - 1e-6, Eigenvector),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Eigen_beta), !is.na(PropSkinny), n_days > 0)
+
+# Fit zero-inflated beta: conditional mean on logit scale; ZI intercept only
+m_eig_zib <- glmmTMB(
+  Eigen_beta ~ PropSkinny + (1|Title) + (1|Year),
+  ziformula = ~ 1,                       # point mass at 0
+  family    = beta_family(link = "logit"),
+  weights   = n_days,                    # optional effort weighting
+  data      = df_zib
+)
+
+cat("\n--- Zero-inflated Beta GLMM ---\n")
+print(summary(m_eig_zib))
+
+# ---------- Clean 4-panel residuals (no DHARMa test overlays) ----------
+res   <- simulateResiduals(m_eig_zib, n = 1000, refit = FALSE)
+fit   <- predict(m_eig_zib, type = "response", na.action = na.exclude)
+
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]; fit <- fit[idx]
+n   <- length(u)
+
+theo <- (1:n)/(n+1)                                       # expected U(0,1)
+xf   <- rank(fit, ties.method = "average")/(n+1)          # rank-transformed fits
+
+# pull PropSkinny from model frame for perfect alignment, then subset
+mf <- model.frame(m_eig_zib)
+PropSkinny <- mf$PropSkinny[idx]
+
+op <- par(mfrow = c(2,2), mar = c(4,4,2,1))
+plot(theo, sort(u), xlab="Expected U(0,1)", ylab="Observed",
+     main="QQ plot residuals", pch=16, cex=.6); abline(0,1,lty=2,col="grey50")
+hist(u, breaks = max(20, floor(sqrt(n))), xlab="Scaled residuals",
+     main="Residual histogram", col="grey85", border="white")
+plot(xf, u, xlab="Fitted (rank transformed)", ylab="DHARMa residual",
+     main="Residuals vs Fitted", pch=16, cex=.6); abline(h=.5, lty=2, col="grey60")
+plot(PropSkinny, u, xlab="PropSkinny", ylab="DHARMa residual",
+     main="Residuals vs PropSkinny", pch=16, cex=.6); abline(h=.5, lty=2, col="grey60")
+par(op)
+
+
+
+```
+Gaussian LMM on logit-transformed Eigenvector (lme4)
+```{r}
+# ===== Eigenvector (logit) ~ PropSkinny : Gaussian LMM =====
+library(lme4)
+library(DHARMa)
+library(dplyr)
+
+# Prepare data: squeeze (0,1) and logit-transform
+logit <- function(p) log(p/(1-p))
+
+df_logit <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    # squeeze both 0 and 1 for stable logit
+    Eigen_squeezed = pmin(pmax(Eigenvector, 1e-6), 1 - 1e-6),
+    Eigen_logit    = logit(Eigen_squeezed),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Eigen_logit), !is.na(PropSkinny), n_days > 0)
+
+m_eig_lmm <- lmer(
+  Eigen_logit ~ PropSkinny + (1|Title) + (1|Year),
+  data = df_logit
+)
+
+cat("\n--- Gaussian LMM (logit Eigenvector) ---\n")
+print(summary(m_eig_lmm))
+
+# ---------- Clean 4-panel residuals ----------
+res   <- simulateResiduals(m_eig_lmm, n = 1000, refit = FALSE)
+fit   <- predict(m_eig_lmm, type = "response", na.action = na.exclude)
+
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]; fit <- fit[idx]
+n   <- length(u)
+
+theo <- (1:n)/(n+1)
+xf   <- rank(fit, ties.method="average")/(n+1)
+
+mf <- model.frame(m_eig_lmm)
+PropSkinny <- mf$PropSkinny[idx]
+
+op <- par(mfrow = c(2,2), mar = c(4,4,2,1))
+plot(theo, sort(u), xlab="Expected U(0,1)", ylab="Observed",
+     main="QQ plot residuals", pch=16, cex=.6); abline(0,1,lty=2,col="grey50")
+hist(u, breaks = max(20, floor(sqrt(n))), xlab="Scaled residuals",
+     main="Residual histogram", col="grey85", border="white")
+plot(xf, u, xlab="Fitted (rank transformed)", ylab="DHARMa residual",
+     main="Residuals vs Fitted", pch=16, cex=.6); abline(h=.5, lty=2, col="grey60")
+plot(PropSkinny, u, xlab="PropSkinny", ylab="DHARMa residual",
+     main="Residuals vs PropSkinny", pch=16, cex=.6); abline(h=.5, lty=2, col="grey60")
+par(op)
+
+
+
+
+
+
+```
+Gaussian LMM with logit-transformed eigenvector
+```{r}
+library(lme4)
+library(DHARMa)
+
+df_cent <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny/n_days, NA_real_),
+    Eigen_clipped = pmin(pmax(Eigenvector, 1e-6), 1 - 1e-6),
+    Eigen_logit = qlogis(Eigen_clipped),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Eigen_logit), !is.na(PropSkinny), n_days > 0)
+
+m_eig_lmm <- lmer(Eigen_logit ~ PropSkinny + (1|Title) + (1|Year),
+                  data = df_cent)
+
+summary(m_eig_lmm)
+
+# DHARMa (clean)
+res <- simulateResiduals(m_eig_lmm, n = 1000, refit = FALSE)
+plot(res)
+
+
+
+
+
+
+
+```
+Tweedie appears to be the best fitting model-choose to retain the model
+```{r}
+# ---- Packages ----
+library(dplyr)
+library(glmmTMB)
+library(lme4)
+library(DHARMa)
+library(MuMIn)        # AICc
+library(performance)  # R2 for mixed models
+
+# ---- 0) Prep once: body condition (PropSkinny) and eigenvector variants ----
+# Assumes you already built df_bc with columns:
+#   Title, Year, Eigenvector, n_days, y_skinny
+# If not, re-use your df_bc construction from earlier steps.
+
+eps <- 1e-6
+
+df_cent <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    # clip to (0,1) for beta/ logit
+    Eigen_clip = pmin(pmax(Eigenvector, eps), 1 - eps),
+    # transformations for alternative families
+    Eigen_log   = log(pmax(Eigenvector, eps)),                  # > 0 for log-normal
+    Eigen_logit = qlogis(Eigen_clip),                           # Gaussian on logit
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(PropSkinny), n_days > 0, !is.na(Eigenvector))
+
+# Quick sanity:
+# summary(df_cent$Eigenvector); table(df_cent$Eigenvector == 0 | df_cent$Eigenvector == 1, useNA="ifany")
+
+# ---- Helper: clean 4-panel diagnostics (no test annotations) ----
+plot_resid4 <- function(model, predictor_name = NULL, main_suffix = "") {
+  res <- simulateResiduals(model, n = 1000, refit = FALSE)
+  fit <- predict(model, type = "response", na.action = na.exclude)
+
+  u   <- res$scaledResiduals
+  idx <- is.finite(u) & is.finite(fit)
+  u   <- u[idx]; fit <- fit[idx]
+  n   <- length(u)
+
+  theo <- (1:n) / (n + 1)
+  xf   <- rank(fit, ties.method = "average") / (n + 1)
+
+  # Pull predictor from model frame to ensure alignment
+  mf <- model.frame(model)
+  if (!is.null(predictor_name) && predictor_name %in% names(mf)) {
+    pred <- mf[[predictor_name]]
+    pred <- pred[idx]
+  } else {
+    pred <- rep(NA_real_, n)
+  }
+
+  op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+  plot(theo, sort(u),
+       xlab = "Expected U(0,1)", ylab = "Observed",
+       main = paste("QQ plot residuals", main_suffix), pch = 16, cex = 0.6)
+  abline(0, 1, lty = 2, col = "grey50")
+
+  hist(u, breaks = max(20, floor(sqrt(n))),
+       xlab = "Scaled residuals",
+       main = paste("Residual histogram", main_suffix),
+       col = "grey85", border = "white")
+
+  plot(xf, u,
+       xlab = "Fitted (rank transformed)",
+       ylab = "DHARMa residual",
+       main = paste("Residuals vs Fitted", main_suffix),
+       pch = 16, cex = 0.6)
+  abline(h = 0.5, lty = 2, col = "grey60")
+
+  # Only plot panel 4 if predictor is present
+  if (all(is.finite(pred))) {
+    plot(pred, u,
+         xlab = predictor_name, ylab = "DHARMa residual",
+         main = paste("Residuals vs", predictor_name, main_suffix),
+         pch = 16, cex = 0.6)
+    abline(h = 0.5, lty = 2, col = "grey60")
+  } else {
+    plot.new(); title(main = "—")
+  }
+
+  par(op)
+}
+
+# ---- 1) Beta GLMM (logit link); good for (0,1) ----
+m_eig_beta <- glmmTMB(
+  Eigen_clip ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_cent,
+  family  = beta_family(link = "logit"),
+  weights = n_days
+)
+cat("\n\n=== Beta GLMM ===\n"); print(summary(m_eig_beta))
+plot_resid4(m_eig_beta, predictor_name = "PropSkinny", main_suffix = " (Beta)")
+
+# ---- 2) Zero-inflated Beta (in case of exact zeros originally) ----
+# Using clipped response still works; zero inflation will tend toward 0-prob ~ 0 if none.
+m_eig_zibeta <- glmmTMB(
+  Eigen_clip ~ PropSkinny + (1|Title) + (1|Year),
+  ziformula = ~ 1,
+  data    = df_cent,
+  family  = beta_family(link = "logit"),
+  weights = n_days
+)
+cat("\n\n=== Zero-inflated Beta GLMM ===\n"); print(summary(m_eig_zibeta))
+plot_resid4(m_eig_zibeta, predictor_name = "PropSkinny", main_suffix = " (ZI-Beta)")
+
+# ---- 3) Tweedie GLMM (positive, continuous; can allow mass near 0) ----
+m_eig_tweedie <- glmmTMB(
+  Eigenvector ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_cent,
+  family  = tweedie(link = "log"),
+  weights = n_days
+)
+cat("\n\n=== Tweedie GLMM ===\n"); print(summary(m_eig_tweedie))
+plot_resid4(m_eig_tweedie, predictor_name = "PropSkinny", main_suffix = " (Tweedie)")
+
+# ---- 4) Log-normal GLMM (Gaussian on log of Eigenvector) ----
+m_eig_lognorm <- glmmTMB(
+  Eigen_log ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_cent,
+  family  = gaussian(),     # implies log-normal on original scale
+  weights = n_days
+)
+cat("\n\n=== Log-normal GLMM (Gaussian on log) ===\n"); print(summary(m_eig_lognorm))
+plot_resid4(m_eig_lognorm, predictor_name = "PropSkinny", main_suffix = " (Log-normal)")
+
+# ---- 5) Gaussian LMM on logit-transformed eigenvector ----
+m_eig_gauss_logit <- lmer(
+  Eigen_logit ~ PropSkinny + (1|Title) + (1|Year),
+  data = df_cent
+)
+cat("\n\n=== Gaussian LMM on logit(Eigen) ===\n"); print(summary(m_eig_gauss_logit))
+# DHARMa also works with lmer objects
+plot_resid4(m_eig_gauss_logit, predictor_name = "PropSkinny", main_suffix = " (Gaussian logit)")
+
+# ---- 6) Model comparison: AICc + R2 ----
+mods <- list(
+  Beta        = m_eig_beta,
+  ZI_Beta     = m_eig_zibeta,
+  Tweedie     = m_eig_tweedie,
+  LogNormal   = m_eig_lognorm,
+  Gauss_Logit = m_eig_gauss_logit
+)
+
+# AICc
+aic_tab <- MuMIn::model.sel(mods)  # produces rank by AICc
+
+# R2 (marginal/conditional)
+r2_tab <- do.call(rbind, lapply(names(mods), function(nm) {
+  rr <- try(performance::r2(mods[[nm]]), silent = TRUE)
+  if (inherits(rr, "try-error")) return(data.frame(model = nm, R2_marginal = NA, R2_conditional = NA))
+  data.frame(model = nm,
+             R2_marginal = rr$R2_marginal,
+             R2_conditional = rr$R2_conditional)
+}))
+row.names(r2_tab) <- NULL
+
+cat("\n\n=== AICc comparison ===\n"); print(aic_tab)
+cat("\n\n=== R2 (marginal / conditional) ===\n"); print(r2_tab)
+
+
+
+
+```
+```{r}
+# ==== Strength (or Eigenvector) ~ body condition : Tweedie GLMM ====
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# 0) Build analysis df (reuse your df_bc object)
+df_tw <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  # >>> Choose ONE response column here: Strength OR Eigenvector <<<
+  #     If you use Eigenvector keep zeros; Tweedie handles zeros.
+  filter(!is.na(Strength), !is.na(PropSkinny), n_days > 0)
+
+# 1) Fit Tweedie (variance ~ mu^p; p estimated). 
+#    If you prefer to control sampling effort, keep weights = n_days.
+m_str_tweedie <- glmmTMB(
+  Strength ~ PropSkinny + (1|Title) + (1|Year),
+  data   = df_tw,
+  family = tweedie(link = "log"),
+  weights = n_days
+)
+
+# 2) Model summary
+summary(m_str_tweedie)
+
+# 3) DHARMa residuals (no refit)
+res_tw  <- simulateResiduals(m_str_tweedie, n = 1000, refit = FALSE)
+
+# 4) Clean 4-panel diagnostics WITHOUT DHARMa’s test annotations
+#    (QQ, histogram, residuals vs fitted, residuals vs PropSkinny)
+fit_tw <- predict(m_str_tweedie, type = "response", na.action = na.exclude)
+
+u   <- res_tw$scaledResiduals
+idx <- is.finite(u) & is.finite(fit_tw)
+u   <- u[idx]
+fit <- fit_tw[idx]
+n   <- length(u)
+
+theo <- (1:n) / (n + 1)                                  # expected U(0,1)
+xf   <- rank(fit, ties.method = "average") / (n + 1)     # rank-x for smooth axis
+
+# Pull predictor from model frame to guarantee alignment
+mf <- model.frame(m_str_tweedie)
+PropSkinny <- mf$PropSkinny[idx]
+
+op <- par(mfrow = c(2,2), mar = c(4,4,2,1))
+
+# (1) QQ
+plot(theo, sort(u),
+     xlab = "Expected U(0,1)", ylab = "Observed",
+     main = "QQ plot residuals (Tweedie)", pch = 16, cex = 0.6)
+abline(0, 1, lty = 2, col = "grey50")
+
+# (2) Histogram
+hist(u, breaks = max(20, floor(sqrt(n))),
+     xlab = "Scaled residuals", main = "Residual histogram (Tweedie)",
+     col = "grey85", border = "white")
+
+# (3) Residuals vs fitted
+plot(xf, u,
+     xlab = "Fitted (rank transformed)", ylab = "DHARMa residual",
+     main = "Residuals vs Fitted (Tweedie)", pch = 16, cex = 0.6)
+abline(h = 0.5, lty = 2, col = "grey60")
+
+# (4) Residuals vs PropSkinny
+plot(PropSkinny, u,
+     xlab = "PropSkinny", ylab = "DHARMa residual",
+     main = "Residuals vs PropSkinny (Tweedie)", pch = 16, cex = 0.6)
+abline(h = 0.5, lty = 2, col = "grey60")
+
+par(op)
+
+
+
+
+
+```
+
+LR for eigenvector centrality model
+```{r}
+library(glmmTMB)
+
+## 1. Full Tweedie model: Eigenvector ~ PropSkinny + random effects
+m_eig_tw <- glmmTMB(
+  Eigenvector ~ PropSkinny + (1 | Title) + (1 | Year),
+  data   = df_tw,
+  family = tweedie(link = "log"),
+  weights = n_days        # keep same effort weighting
+)
+
+## 2. Null Tweedie model: same random structure, NO PropSkinny
+m_eig_tw_null <- glmmTMB(
+  Eigenvector ~ 1 + (1 | Title) + (1 | Year),
+  data   = df_tw,
+  family = tweedie(link = "log"),
+  weights = n_days
+)
+
+## 3. Likelihood–ratio test (same as you did for Degree)
+anova(m_eig_tw_null, m_eig_tw)
+
+
+
+
+
+```
+
+visual 
+```{r}
+library(ggplot2)
+library(glmmTMB)
+library(DHARMa)
+library(ggeffects)
+
+# If your model is named m_eig_tweedie instead of m_eig_tw, 
+# just replace m_eig_tw with that object name below.
+
+# 1. Predicted marginal effects for Eigenvector ~ PropSkinny
+#    (fixed effects only, on the response scale)
+pred_eig <- ggpredict(
+  m_eig_tw,              # your Tweedie eigenvector model
+  terms = "PropSkinny"   # you can also do "PropSkinny [0:1 by=0.01]" to force a grid
+)
+
+# 2. Plot predicted eigenvector centrality vs PropSkinny
+ggplot(pred_eig, aes(x = x, y = predicted)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high),
+              alpha = 0.2) +
+  labs(
+    x = "Proportion of days classified as skinny",
+    y = "Predicted eigenvector centrality",
+    title = "Predicted eigenvector centrality as a function of body condition"
+  ) +
+  theme_minimal(base_size = 16)
+
+
+
+
+```
+
+
+Strength centrality ~ body condition
+```{r}
+# --- Strength centrality ~ PropSkinny (Gamma GLMM) ---
+
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# Prepare dataset
+df_cent_pos <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Strength), Strength > 0, !is.na(PropSkinny), n_days > 0)
+
+# Fit Gamma GLMM with log link
+m_str_gamma <- glmmTMB(
+  Strength ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_cent_pos,
+  family  = Gamma(link = "log"),
+  weights = n_days
+)
+
+# Summary
+summary(m_str_gamma)
+
+# --- Clean residual diagnostics ---
+res <- simulateResiduals(m_str_gamma, n = 1000, refit = FALSE)
+fit <- predict(m_str_gamma, type = "response", na.action = na.exclude)
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]; fit <- fit[idx]
+n   <- length(u)
+theo <- (1:n) / (n + 1)
+xf <- rank(fit, ties.method = "average") / (n + 1)
+mf <- model.frame(m_str_gamma)
+PropSkinny <- mf$PropSkinny[idx]
+
+# --- 4-panel residual plot ---
+op <- par(mfrow = c(2,2), mar = c(4,4,2,1))
+
+# QQ plot
+plot(theo, sort(u), xlab="Expected U(0,1)", ylab="Observed",
+     main="QQ plot residuals (Gamma)", pch=16, cex=0.6)
+abline(0,1,lty=2,col="grey60")
+
+# Histogram
+hist(u, breaks=max(20, floor(sqrt(n))), col="grey85", border="white",
+     xlab="Scaled residuals", main="Residual histogram (Gamma)")
+
+# Residuals vs fitted
+plot(xf, u, pch=16, cex=0.6,
+     xlab="Fitted (rank transformed)",
+     ylab="DHARMa residual", main="Residuals vs Fitted (Gamma)")
+abline(h=0.5, lty=2, col="grey60")
+
+# Residuals vs PropSkinny
+plot(PropSkinny, u, pch=16, cex=0.6,
+     xlab="PropSkinny", ylab="DHARMa residual",
+     main="Residuals vs PropSkinny (Gamma)")
+abline(h=0.5, lty=2, col="grey60")
+
+par(op)
+
+
+
+
+
+
+```
+
+B) If you have many zeros in Strength → Tweedie or log-normal
+```{r}
+# --- Strength centrality ~ PropSkinny (Gamma GLMM) ---
+
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# Prepare dataset
+df_cent_pos <- df_bc %>%
+  mutate(
+    PropSkinny = ifelse(n_days > 0, y_skinny / n_days, NA_real_),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(Strength), Strength > 0, !is.na(PropSkinny), n_days > 0)
+
+# Fit Gamma GLMM with log link (weight by effort)
+m_str_gamma <- glmmTMB(
+  Strength ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_cent_pos,
+  family  = Gamma(link = "log"),
+  weights = n_days
+)
+
+# Model summary
+summary(m_str_gamma)
+
+# --- Clean residual diagnostics (no test labels) ---
+res <- simulateResiduals(m_str_gamma, n = 1000, refit = FALSE)
+
+# Fitted values on the response scale; keep NA alignment
+fit <- predict(m_str_gamma, type = "response", na.action = na.exclude)
+
+# Extract residual vector and align lengths
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]; fit <- fit[idx]
+n   <- length(u)
+
+# Expected Uniform(0,1) quantiles for QQ
+theo <- (1:n) / (n + 1)
+
+# Rank-transformed fitted for smooth x-axis
+xf <- rank(fit, ties.method = "average") / (n + 1)
+
+# Pull predictor from model frame (ensures perfect alignment)
+mf <- model.frame(m_str_gamma)
+PropSkinny <- mf$PropSkinny[idx]
+
+# ---- 4-panel residual plot ----
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+## (1) QQ plot
+plot(theo, sort(u),
+     xlab = "Expected U(0,1)", ylab = "Observed",
+     main = "QQ plot residuals (Gamma)", pch = 16, cex = 0.6)
+abline(0, 1, lty = 2, col = "grey60")
+
+## (2) Histogram
+hist(u, breaks = max(20, floor(sqrt(n))),
+     xlab = "Scaled residuals", main = "Residual histogram (Gamma)",
+     col = "grey85", border = "white")
+
+## (3) Residuals vs fitted
+plot(xf, u, pch = 16, cex = 0.6,
+     xlab = "Fitted (rank transformed)",
+     ylab = "DHARMa residual", main = "Residuals vs Fitted (Gamma)")
+abline(h = 0.5, lty = 2, col = "grey60")
+
+## (4) Residuals vs PropSkinny
+plot(PropSkinny, u, pch = 16, cex = 0.6,
+     xlab = "PropSkinny", ylab = "DHARMa residual",
+     main = "Residuals vs PropSkinny (Gamma)")
+abline(h = 0.5, lty = 2, col = "grey60")
+
+par(op)
+
+
+
+
+```
+
+
+Strength of relationships
+Mean relationship strength ~ bodyCondition + (1|ID) + (1|Year)
+```{r}
+# --- Mean Strength ~ PropSkinny (Gamma GLMM) ---
+
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+# Prepare dataset
+df_strength <- df_strength %>%
+  mutate(
+    MeanStrength = ifelse(Degree > 0, Strength / Degree, NA_real_),
+    Title = factor(Title),
+    Year  = factor(Year)
+  ) %>%
+  filter(!is.na(MeanStrength), MeanStrength > 0, !is.na(PropSkinny), n_days > 0)
+
+# Fit Gamma GLMM with log link
+m_meanstr_gamma <- glmmTMB(
+  MeanStrength ~ PropSkinny + (1|Title) + (1|Year),
+  data    = df_strength,
+  family  = Gamma(link = "log"),
+  weights = n_days
+)
+
+# Summary
+summary(m_meanstr_gamma)
+
+# --- Clean residual diagnostics ---
+res <- simulateResiduals(m_meanstr_gamma, n = 1000, refit = FALSE)
+fit <- predict(m_meanstr_gamma, type = "response", na.action = na.exclude)
+u   <- res$scaledResiduals
+idx <- is.finite(u) & is.finite(fit)
+u   <- u[idx]; fit <- fit[idx]
+n   <- length(u)
+theo <- (1:n) / (n + 1)
+xf <- rank(fit, ties.method = "average") / (n + 1)
+mf <- model.frame(m_meanstr_gamma)
+PropSkinny <- mf$PropSkinny[idx]
+
+# --- 4-panel residual plot ---
+op <- par(mfrow = c(2,2), mar = c(4,4,2,1))
+
+# QQ plot
+plot(theo, sort(u), xlab="Expected U(0,1)", ylab="Observed",
+     main="QQ plot residuals (Gamma)", pch=16, cex=0.6)
+abline(0,1,lty=2,col="grey60")
+
+# Histogram
+hist(u, breaks=max(20, floor(sqrt(n))), col="grey85", border="white",
+     xlab="Scaled residuals", main="Residual histogram (Gamma)")
+
+# Residuals vs fitted
+plot(xf, u, pch=16, cex=0.6,
+     xlab="Fitted (rank transformed)",
+     ylab="DHARMa residual", main="Residuals vs Fitted (Gamma)")
+abline(h=0.5, lty=2, col="grey60")
+
+# Residuals vs PropSkinny
+plot(PropSkinny, u, pch=16, cex=0.6,
+     xlab="PropSkinny", ylab="DHARMa residual",
+     main="Residuals vs PropSkinny (Gamma)")
+abline(h=0.5, lty=2, col="grey60")
+
+par(op)
+
+
+```
+poor fit, trying alternative models
+```{r}
+# ---- Packages ----
+library(dplyr)
+library(glmmTMB)
+library(lme4)
+library(DHARMa)
+library(MuMIn)        # AICc
+library(performance)  # R2 for mixed models
+
+# ---- 1) Prepare data once ---------------------------------------------
+
+eps <- 1e-6
+
+df_strength_mod <- df_strength %>%
+  mutate(
+    # mean relationship strength per year
+    MeanStrength = ifelse(Degree > 0, Strength / Degree, NA_real_),
+    # for beta/logit models: force into (0,1)
+    Mean_clip    = pmin(pmax(MeanStrength, eps), 1 - eps),
+    Mean_log     = log(pmax(MeanStrength, eps)),  # for log-normal
+    Title        = factor(Title),                 # individual ID
+    Year         = factor(Year)
+  ) %>%
+  filter(
+    !is.na(MeanStrength),
+    MeanStrength > 0,
+    !is.na(PropSkinny),
+    n_days > 0
+  )
+
+# ---- 2) Helper: nice 4-panel DHARMa residual plots -------------------
+
+plot_resid4 <- function(model, predictor_name = "PropSkinny", main_suffix = "") {
+  res <- simulateResiduals(model, n = 1000, refit = FALSE)
+  fit <- predict(model, type = "response", na.action = na.exclude)
+
+  u   <- res$scaledResiduals
+  idx <- is.finite(u) & is.finite(fit)
+  u   <- u[idx]; fit <- fit[idx]
+  n   <- length(u)
+
+  theo <- (1:n) / (n + 1)
+  xf   <- rank(fit, ties.method = "average") / (n + 1)
+
+  mf <- model.frame(model)
+  pred <- mf[[predictor_name]][idx]
+
+  op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+  # QQ
+  plot(theo, sort(u),
+       xlab = "Expected U(0,1)", ylab = "Observed",
+       main = paste("QQ plot residuals", main_suffix),
+       pch = 16, cex = 0.6)
+  abline(0, 1, lty = 2, col = "grey60")
+
+  # Histogram
+  hist(u,
+       breaks = max(20, floor(sqrt(n))),
+       xlab   = "Scaled residuals",
+       main   = paste("Residual histogram", main_suffix),
+       col    = "grey85", border = "white")
+
+  # Residuals vs fitted
+  plot(xf, u,
+       xlab = "Fitted (rank transformed)",
+       ylab = "DHARMa residual",
+       main = paste("Residuals vs Fitted", main_suffix),
+       pch = 16, cex = 0.6)
+  abline(h = 0.5, lty = 2, col = "grey60")
+
+  # Residuals vs predictor
+  plot(pred, u,
+       xlab = predictor_name,
+       ylab = "DHARMa residual",
+       main = paste("Residuals vs", predictor_name, main_suffix),
+       pch = 16, cex = 0.6)
+  abline(h = 0.5, lty = 2, col = "grey60")
+
+  par(op)
+}
+
+# ---- 3) Fit 4 candidate models ---------------------------------------
+
+## (a) Gamma GLMM
+m_mean_gamma <- glmmTMB(
+  MeanStrength ~ PropSkinny + (1 | Title) + (1 | Year),
+  data    = df_strength_mod,
+  family  = Gamma(link = "log"),
+  weights = n_days
+)
+
+## (b) Tweedie GLMM
+m_mean_tweedie <- glmmTMB(
+  MeanStrength ~ PropSkinny + (1 | Title) + (1 | Year),
+  data    = df_strength_mod,
+  family  = tweedie(link = "log"),
+  weights = n_days
+)
+
+## (c) Log-normal GLMM (Gaussian on log scale)
+m_mean_lognorm <- glmmTMB(
+  Mean_log ~ PropSkinny + (1 | Title) + (1 | Year),
+  data    = df_strength_mod,
+  family  = gaussian(),
+  weights = n_days
+)
+
+## (d) Beta GLMM (for MeanStrength in (0,1))
+m_mean_beta <- glmmTMB(
+  Mean_clip ~ PropSkinny + (1 | Title) + (1 | Year),
+  data    = df_strength_mod,
+  family  = beta_family(link = "logit"),
+  weights = n_days
+)
+
+# Optional: print summaries
+summary(m_mean_gamma)
+summary(m_mean_tweedie)
+summary(m_mean_lognorm)
+summary(m_mean_beta)
+
+# ---- 4) Residual diagnostics for each --------------------------------
+
+plot_resid4(m_mean_gamma,   "PropSkinny", "(Gamma)")
+plot_resid4(m_mean_tweedie, "PropSkinny", "(Tweedie)")
+plot_resid4(m_mean_lognorm, "PropSkinny", "(Log-normal)")
+plot_resid4(m_mean_beta,    "PropSkinny", "(Beta)")
+
+# ---- 5) Model comparison: AICc + R2 ----------------------------------
+
+mods_mean <- list(
+  Gamma     = m_mean_gamma,
+  Tweedie   = m_mean_tweedie,
+  LogNormal = m_mean_lognorm,
+  Beta      = m_mean_beta
+)
+
+# AICc table
+aic_mean <- MuMIn::model.sel(mods_mean)
+aic_mean
+
+# R2 (marginal & conditional) for each model
+r2_mean <- do.call(rbind, lapply(names(mods_mean), function(nm) {
+  rr <- try(performance::r2(mods_mean[[nm]]), silent = TRUE)
+  if (inherits(rr, "try-error")) {
+    data.frame(model = nm, R2_marginal = NA, R2_conditional = NA)
+  } else {
+    data.frame(model = nm,
+               R2_marginal = rr$R2_marginal,
+               R2_conditional = rr$R2_conditional)
+  }
+}))
+row.names(r2_mean) <- NULL
+r2_mean
+
+
+
+
+```
