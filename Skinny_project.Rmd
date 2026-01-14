@@ -1,0 +1,475 @@
+---
+title: "Skinny_Project"
+output: html_document
+---
+
+
+
+```{r}
+# Start fresh
+rm(list = ls())
+
+# Load packages
+library(dplyr)
+library(stringr)
+library(lubridate)
+
+#Read the CSV with nonstandard names intact
+df <- read.csv("claire_skinny_dorsals(in).csv",
+               stringsAsFactors = FALSE,
+               check.names = FALSE)
+
+# Check the column names exactly as R reads them
+names(df)
+
+# Rename the tricky ones
+df <- df %>%
+  dplyr::rename(
+    Keyword_export = `Keyword-export`,
+    Date_Time = `Date Time`
+  )
+
+# Clean and subset
+df_subset <- df %>%
+  dplyr::mutate(
+    Sex = dplyr::case_when(
+      stringr::str_detect(Keyword_export, "Male") ~ "Male",
+      stringr::str_detect(Keyword_export, "FemaleJ") ~ "FemaleJ",
+      TRUE ~ NA_character_
+    ),
+    Age = dplyr::case_when(
+      stringr::str_detect(Keyword_export, regex("calf", ignore_case = TRUE)) ~ "Calf",
+      stringr::str_detect(Keyword_export, regex("juv", ignore_case = TRUE)) ~ "Juvenile",
+      stringr::str_detect(Keyword_export, regex("jut/calf", ignore_case = TRUE)) ~ "Juvenile/Calf",
+      TRUE ~ "Adult"
+    ),
+    Date_Time = lubridate::mdy_hm(Date_Time, quiet = TRUE)
+  ) %>%
+  dplyr::select(Title, Sex, Age, Date_Time)
+
+# View the cleaned dataset
+head(df_subset)
+
+
+```
+
+
+```{r}
+df_subset <- df %>%
+  dplyr::mutate(
+    Sex = dplyr::case_when(
+      stringr::str_detect(Keyword_export, "Male") ~ "Male",
+      stringr::str_detect(Keyword_export, "FemaleJ") ~ "FemaleJ",
+      TRUE ~ NA_character_
+    ),
+    Age = dplyr::case_when(
+      stringr::str_detect(Keyword_export, regex("calf", ignore_case = TRUE)) ~ "Calf",
+      stringr::str_detect(Keyword_export, regex("juv", ignore_case = TRUE)) ~ "Juvenile",
+      stringr::str_detect(Keyword_export, regex("jut/calf", ignore_case = TRUE)) ~ "Juvenile/Calf",
+      TRUE ~ "Adult"
+    ),
+    # 🆕 Extract 'skinny' keyword
+    Skinny = ifelse(stringr::str_detect(Keyword_export, regex("claire_skinny", ignore_case = TRUE)),
+                    "Yes", "No"),
+    
+    Date_Time = lubridate::mdy_hm(Date_Time, quiet = TRUE)
+  ) %>%
+  dplyr::select(Title, Sex, Age, Skinny, Date_Time)
+
+
+head(df_subset)
+
+```
+
+
+
+```{r}
+library(dplyr)
+library(stringr)
+library(lubridate)
+
+# Read with original names intact, then rename once
+df <- read.csv("claire_skinny_dorsals(in).csv",
+               stringsAsFactors = FALSE, check.names = FALSE) %>%
+  dplyr::rename(
+    Keyword_export = `Keyword-export`,
+    Date_Time      = `Date Time`
+  )
+
+# Build tidy columns + Skinny flag; parse datetime then drop time (date only)
+df_subset <- df %>%
+  dplyr::mutate(
+    Sex = dplyr::case_when(
+      stringr::str_detect(Keyword_export, "Male") ~ "Male",
+      stringr::str_detect(Keyword_export, "FemaleJ") ~ "FemaleJ",
+      TRUE ~ NA_character_
+    ),
+    Age = dplyr::case_when(
+      stringr::str_detect(Keyword_export, regex("juv\\s*/\\s*calf|jut\\s*/\\s*calf", ignore_case = TRUE)) ~ "Juvenile/Calf",
+      stringr::str_detect(Keyword_export, regex("calf", ignore_case = TRUE)) ~ "Calf",
+      stringr::str_detect(Keyword_export, regex("juv",  ignore_case = TRUE)) ~ "Juvenile",
+      TRUE ~ "Adult"
+    ),
+    Skinny = ifelse(
+      stringr::str_detect(Keyword_export, regex("claire_skinny", ignore_case = TRUE)),
+      "Yes", "No"
+    ),
+    # parse to POSIXct then keep date only
+    Date_Time = as.Date(lubridate::mdy_hm(Date_Time, quiet = TRUE)),
+    # convenience column for grouping (same as Date_Time now)
+    Date      = Date_Time
+  ) %>%
+  dplyr::select(Title, Sex, Age, Skinny, Date_Time, Date)
+
+# ---- One row per Title per day ----
+df_daily <- df_subset %>%
+  dplyr::group_by(Title, Date) %>%
+  dplyr::summarise(
+    # first non-NA (uses default= to avoid zero-length issues)
+    Sex    = dplyr::first(na.omit(Sex), default = NA_character_),
+    Age    = dplyr::first(na.omit(Age), default = NA_character_),
+    # Skinny is "Yes" if any photo that day had the keyword
+    Skinny = dplyr::if_else(any(Skinny == "Yes", na.rm = TRUE), "Yes", "No"),
+    .groups = "drop"
+  ) %>%
+  # keep a tidy output: Date_Time is date-only
+  dplyr::transmute(Title, Sex, Age, Skinny, Date_Time = Date)
+
+head(df_daily)
+
+write.csv(df_daily, "df_daily_cleaned.csv", row.names = FALSE)
+
+
+```
+
+add year column
+```{r}
+library(lubridate)
+
+df_daily <- df_daily %>%
+  dplyr::mutate(Year = year(Date_Time))
+
+```
+
+
+```{r}
+table(df_daily$Skinny)
+
+str(df_daily$Sex)
+df_daily$Sex <- factor(df_daily$Sex)
+
+table(df_daily$Sex, df_daily$Skinny)
+
+
+```
+
+
+bodyCondition ~ sex + (1|Year)
+```{r}
+library(lme4)
+
+# Convert Skinny to a binary factor (1 = Yes, 0 = No)
+df_daily$Skinny <- ifelse(df_daily$Skinny == "Yes", 1, 0)
+
+mod1 <- glmer(Skinny ~ Sex + (1 | Year),
+              data = df_daily,
+              family = binomial)
+summary(mod1)
+
+
+
+
+```
+
+in the above output suggests there are some variability among years-some years likely have more skinny individuals than others
+```{r}
+ranef(mod1)$Year
+
+#install.packages("sjPlot")
+library(sjPlot)
+plot_model(mod1, type = "re", sort.est = TRUE)
+
+
+
+```
+
+
+Most residuals are small (good), but one or two observations have unusually high residuals (~8).
+check for outliers or influential points
+
+```{r}
+#install.packages("DHARMa")
+library(DHARMa)
+res <- simulateResiduals(mod1, n = 1000)
+plot(res)
+
+```
+
+
+bodyCondition ~ ageClass + (1|Year)
+```{r}
+
+mod2 <- glmer(Skinny ~ Age + (1 | Year),
+              data = df_daily,
+              family = binomial)
+summary(mod2)
+
+```
+
+
+```{r}
+
+#install.packages("DHARMa")
+library(DHARMa)
+res <- simulateResiduals(mod2, n = 1000)
+plot(res)
+
+
+```
+
+The significant intercept does not mean that “age class” has an effect — it simply reflects that the baseline category (Adults) has a nonzero probability of being skinny.
+
+the standard error was really high for calves, this is because there are not many calves in the photographic datatset (because they can not be resighted).the model cant reliably estimate the effect. decided to try to lump all young individuals together
+
+```{r}
+mf2 <- model.frame(mod2)   # data actually used by the working model
+
+# If Skinny is logical/factor, coerce to 0/1 explicitly (no overwriting elsewhere)
+mf2$Skinny_bin <- as.integer(mf2$Skinny)   # this will be 0/1 already for glmer()
+
+# Make the Immature vs Adult grouping
+mf2$Age2 <- ifelse(mf2$Age %in% c("Calf","Juvenile"), "Immature", "Adult")
+mf2$Age2 <- factor(mf2$Age2)
+
+# Sanity checks
+table(mf2$Age,  mf2$Skinny_bin)
+table(mf2$Age2, mf2$Skinny_bin)
+
+library(lme4)
+
+mod_age3 <- glmer(Skinny_bin ~ Age2 + (1 | Year), data = mf2, family = binomial)
+summary(mod_age3)
+
+# Full vs reduced comparisons (valid because same rows)
+mod_age_full <- glmer(Skinny_bin ~ Age + (1 | Year), data = mf2, family = binomial)
+
+anova(mod_age3, mod_age_full, test = "Chisq")  # Immature vs 3-level Age
+drop1(mod_age_full, test = "Chisq")            # Type II LR tests for Age levels
+
+
+```
+IMMATURE GLM
+After accounting for year, age class was not a significant predictor of body condition (χ² = 0.77, df = 1, p = 0.38).
+Adults had a baseline probability of being skinny of ~2.7 %, while immatures (combined calves + juveniles) showed a lower but statistically non-significant probability (~1 %).
+The random year effect (σ = 0.81) suggests some interannual variation in overall condition.
+
+
+```{r}
+
+#install.packages("DHARMa")
+library(DHARMa)
+res <- simulateResiduals(mod_age3, n = 1000)
+plot(res)
+
+```
+
+odds ratios and baseline probabilities
+```{r}
+# helper: inverse logit
+inv_logit <- function(x) exp(x) / (1 + exp(x))
+
+# helper: tidy fixed effects with ORs and Wald CIs
+fixed_or_table <- function(mod, conf_level = 0.95) {
+  beta  <- lme4::fixef(mod)                 # fixed-effect estimates
+  V     <- as.matrix(vcov(mod))             # var-cov of fixed effects
+  se    <- sqrt(diag(V))
+  zcrit <- qnorm((1 + conf_level) / 2)
+
+  lo <- beta - zcrit*se
+  hi <- beta + zcrit*se
+
+  data.frame(
+    Term        = names(beta),
+    Estimate    = beta,
+    SE          = se,
+    OR          = exp(beta),
+    OR_low      = exp(lo),
+    OR_high     = exp(hi),
+    row.names   = NULL,
+    check.names = FALSE
+  )
+}
+
+# helper: baseline probability from intercept
+baseline_prob <- function(mod) inv_logit(lme4::fixef(mod)[["(Intercept)"]])
+
+# helper: ICC for logistic GLMM (random-intercept)
+icc_logit_year <- function(mod, group = "Year") {
+  v_year <- as.numeric(lme4::VarCorr(mod)[[group]][1])  # random intercept variance
+  v_link <- (pi^2) / 3                                  # logistic residual variance
+  v_year / (v_year + v_link)
+}
+
+# ---------- SEX MODEL ----------
+sex_tab <- fixed_or_table(mod1)
+sex_tab
+cat(sprintf("\nBaseline probability (reference level): %.2f%%\n",
+            100*baseline_prob(mod1)))
+cat(sprintf("ICC_Year: %.1f%% of variance at the year level\n",
+            100*icc_logit_year(mod1)))
+
+# ---------- AGE MODEL ----------
+age_tab <- fixed_or_table(mod2)
+age_tab
+cat(sprintf("\nBaseline probability (reference level): %.2f%%\n",
+            100*baseline_prob(mod2)))
+cat(sprintf("ICC_Year: %.1f%% of variance at the year level\n",
+            100*icc_logit_year(mod2)))
+
+# ---------- AGE2 MODEL ----------
+age2_tab <- fixed_or_table(mod_age3)
+age2_tab
+cat(sprintf("\nBaseline probability (reference level): %.2f%%\n",
+            100*baseline_prob(mod_age3)))
+cat(sprintf("ICC_Year: %.1f%% of variance at the year level\n",
+            100*icc_logit_year(mod_age3)))
+
+
+```
+
+
+```{r}
+library(ggeffects)
+library(ggplot2)
+
+# Predicted probabilities for each model
+p1 <- plot(ggpredict(mod1, terms = "Sex")) +
+  theme_classic(base_size = 14) +                      # clean white background
+  theme(
+    panel.grid.major = element_blank(),                # remove major gridlines
+    panel.grid.minor = element_blank(),                # remove minor gridlines
+    panel.border = element_blank(),                    # remove border
+    axis.line = element_line(colour = "black"),        # add black axis lines
+    axis.ticks = element_line(colour = "black")        # keep simple ticks
+  ) +
+  labs(title = "Predicted probabilities of Skinny",
+       x = "Sex",
+       y = "Predicted probability (%)")
+
+p2 <- plot(ggpredict(mod_age3, terms = "Age2")) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.ticks = element_line(colour = "black")
+  ) +
+  labs(title = "Predicted probabilities of Skinny",
+       x = "Age class",
+       y = "Predicted probability (%)")
+
+# Display plots
+p1
+p2
+
+
+
+library(ggeffects)
+library(ggplot2)
+library(scales)
+
+# Predicted probabilities for the original 3-level Age model
+p3 <- plot(ggpredict(mod2, terms = "Age")) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.ticks = element_line(colour = "black"),
+    text = element_text(size = 14)
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 0.5),
+    limits = c(0, 0.05)    # consistent 0–5% scale for comparison
+  ) +
+  labs(
+    title = "Predicted probabilities of Skinny (3-level Age model)",
+    x = "Age class",
+    y = "Predicted probability"
+  )
+
+# Display the plot
+p3
+
+
+```
+
+```{r}
+library(lme4)
+
+# 1) Extract the exact rows/columns used by your already-working mod1
+mf1 <- model.frame(mod1)   # contains Skinny, Sex, Year for those rows
+
+# 2) Refit BOTH models on mf1 so they share the same data object
+mod1_refit <- glmer(Skinny ~ Sex + (1 | Year), data = mf1, family = binomial)
+mod0       <- glmer(Skinny ~ 1   + (1 | Year), data = mf1, family = binomial)
+
+# 3) Sanity check: same rows
+identical(rownames(model.frame(mod1_refit)), rownames(model.frame(mod0)))  # should be TRUE
+
+# 4) Compare
+anova(mod0, mod1_refit, test = "Chisq")
+AIC(mod0, mod1_refit)
+BIC(mod0, mod1_refit)
+
+
+```
+
+
+```{r}
+library(lme4)
+library(dplyr)
+
+# Compare a fitted model to its null using the exact same rows
+compare_to_null <- function(fitted_model, label) {
+  mf   <- model.frame(fitted_model)                                  # rows actually used
+  full <- update(fitted_model, data = mf)                            # refit on mf
+  null <- update(fitted_model, . ~ 1 + (1 | Year), data = mf)        # intercept + (1|Year)
+
+  lrt  <- anova(null, full, test = "Chisq")
+
+  tibble(
+    Model              = label,
+    n                  = nrow(mf),
+    AIC_null           = AIC(null),
+    AIC_full           = AIC(full),
+    DeltaAIC_full_vs_null = AIC(full) - AIC(null),
+    BIC_null           = BIC(null),
+    BIC_full           = BIC(full),
+    logLik_null        = as.numeric(logLik(null)),
+    logLik_full        = as.numeric(logLik(full)),
+    LRT_Chisq          = lrt$Chisq[2],
+    LRT_df             = lrt$Df[2],
+    LRT_p              = lrt$`Pr(>Chisq)`[2]
+  )
+}
+
+# Run for each of your models
+cmp_sex   <- compare_to_null(mod1,      "Sex + (1|Year)")
+cmp_age3  <- compare_to_null(mod2,      "Age (Adult/Juvenile/Calf) + (1|Year)")
+cmp_age2  <- compare_to_null(mod_age3,  "Age2 (Adult vs Immature) + (1|Year)")
+
+# Combine into one table
+cmp_all <- bind_rows(cmp_sex, cmp_age3, cmp_age2) %>%
+  mutate(across(where(is.numeric), ~round(., 3))) %>%
+  arrange(Model)
+
+cmp_all
+
+
+
+
+```
+
