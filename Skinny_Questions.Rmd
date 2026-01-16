@@ -238,7 +238,6 @@ sum(skinny_with_last$Year == skinny_with_last$last_year_seen, na.rm = TRUE)
 
 mean(skinny_with_last$Year == skinny_with_last$last_year_seen)
 
-
 ```
 
 
@@ -283,12 +282,212 @@ avg_social_nonskinny <- skinny_social %>%
 
 avg_social_nonskinny
 
-
 ```
 
 
 
 
 
-maybe use associated_entries from NBW to determine group size?
+used associated_entries from NBW thesis to determine average group size for each year
+```{r}
+library(dplyr)
+library(lubridate)
+library(igraph)
+
+# ---- load ----
+assoc <- read.csv("data/associated_entries.csv", stringsAsFactors = FALSE) %>%
+  mutate(
+    Time_A = ymd_hms(Time_A, tz = "UTC"),
+    Time_B = ymd_hms(Time_B, tz = "UTC"),
+    Title_A = as.character(Title_A),
+    Title_B = as.character(Title_B)
+  )
+
+# ---- unique observation nodes: (Title, Time) ----
+nodes <- bind_rows(
+  assoc %>% transmute(Title = Title_A, Time = Time_A),
+  assoc %>% transmute(Title = Title_B, Time = Time_B)
+) %>%
+  distinct() %>%
+  mutate(node_id = row_number())
+
+# ---- edges as node_id pairs ----
+edges <- assoc %>%
+  transmute(
+    Title_A = Title_A, Time_A = Time_A,
+    Title_B = Title_B, Time_B = Time_B
+  ) %>%
+  left_join(nodes %>% rename(Title_A = Title, Time_A = Time, from = node_id),
+            by = c("Title_A", "Time_A")) %>%
+  left_join(nodes %>% rename(Title_B = Title, Time_B = Time, to = node_id),
+            by = c("Title_B", "Time_B")) %>%
+  transmute(from, to) %>%
+  filter(!is.na(from), !is.na(to), from != to) %>%
+  distinct()
+
+# ---- build graph WITHOUT vertex names ----
+# map node_id -> 1..N so igraph edgelist is clean
+id_map <- nodes$node_id
+edges_mat <- cbind(match(edges$from, id_map),
+                   match(edges$to,   id_map))
+
+g <- graph_from_edgelist(edges_mat, directed = FALSE)
+
+# connected components (= encounters)
+membership <- components(g)$membership  # length = nrow(nodes)
+nodes$encounter_id <- membership
+
+# group size per encounter = # unique Titles in that component
+encounter_sizes <- nodes %>%
+  group_by(encounter_id) %>%
+  summarise(group_size = n_distinct(Title), .groups = "drop")
+
+nodes <- nodes %>%
+  left_join(encounter_sizes, by = "encounter_id") %>%
+  mutate(Year = year(Time))
+
+# ---- average group size per animal per year ----
+avg_group_size_by_year <- nodes %>%
+  group_by(Title, Year) %>%
+  summarise(
+    mean_group_size = mean(group_size, na.rm = TRUE),
+    n_observations = n(),
+    n_encounters = n_distinct(encounter_id),
+    .groups = "drop"
+  ) %>%
+  arrange(Title, Year)
+
+avg_group_size_by_year
+
+write_csv(avg_group_size_by_year, "savg_group_size_by_year.csv")
+
+```
+
+now want to attach skinny values for year--could create df that shows title-year-skinny(Y/N)
+possibility that animals may be classified as skinny during one encounter but not in another--could do proportion skinny for that year ?
+
+use df_daily to make df-start w proportion
+```{r}
+library(dplyr)
+library(lubridate)
+
+df_daily <- read.csv("data/df_daily.csv")
+
+library(dplyr)
+
+skinny_by_year <- df_daily %>%
+  mutate(
+    Skinny_bin = ifelse(tolower(trimws(Skinny)) == "yes", 1, 0)
+  ) %>%
+  group_by(Title, Year, Date_Time) %>%
+  summarise(Skinny_day = max(Skinny_bin, na.rm = TRUE), .groups = "drop") %>%
+  group_by(Title, Year) %>%
+  summarise(
+    prop_skinny = mean(Skinny_day, na.rm = TRUE),
+    n_days = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Title, Year)
+
+skinny_by_year
+
+write_csv(skinny_by_year, "skinny_by_year.csv")
+```
+
+merge the dataframes to make one 
+one row per animal per year w proportion skinny and average group size
+```{r}
+skinny_avg_group_year <- avg_group_size_by_year %>% 
+  left_join( 
+    skinny_by_year, 
+    by = c("Title", "Year") 
+    ) 
+skinny_avg_group_year
+
+write_csv(skinny_avg_group_year, "skinny_avg_group_year")
+
+```
+
+average group size of animals w prop skinny>0 
+vs
+average group size of animals w prop skinny = 0
+
+```{r}
+
+final_df <- skinny_avg_group_year %>%
+  mutate(
+    skinny_year = ifelse(prop_skinny > 0, "Skinny", "Not skinny")
+  )
+
+avg_group_by_skinny <- final_df %>%
+  group_by(skinny_year) %>%
+  summarise(
+    mean_group_size = mean(mean_group_size, na.rm = TRUE),
+    sd_group_size   = sd(mean_group_size, na.rm = TRUE),
+    n_years         = n(),
+    .groups = "drop"
+  )
+
+avg_group_by_skinny
+
+write_csv(avg_group_by_skinny, "avg_group_by_skinny")
+
+```
+
+
+want to find out if proportion skinny gets easier to detect with digital cameras
+use the skinny_by_year df?
+```{r}
+skinny_by_year <- skinny_by_year %>%
+  mutate(
+    camera_era = ifelse(Year > 2007, "Digital", "Film")
+  )
+table(skinny_by_year$camera_era)
+
+skinny_by_year %>%
+  group_by(camera_era) %>%
+  summarise(
+    mean_prop_skinny = mean(prop_skinny, na.rm = TRUE),
+    sd_prop_skinny   = sd(prop_skinny, na.rm = TRUE),
+    n_years          = n(),
+    .groups = "drop"
+  )
+
+
+
+
+```
+use binomial
+```{r}
+skinny_by_year <- skinny_by_year %>%
+  mutate(
+    n_skinny = round(prop_skinny * n_days),
+    n_not_skinny = n_days - n_skinny
+  )
+
+mod_camera_binom <- glmer(
+  cbind(n_skinny, n_not_skinny) ~ camera_era + (1 | Title),
+  data = skinny_by_year,
+  family = binomial
+)
+
+summary(mod_camera_binom)
+
+
+
+```
+
+visualize?
+```{r}
+library(ggplot2)
+
+ggplot(skinny_by_year, aes(x = camera_era, y = prop_skinny)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  geom_jitter(width = 0.15, alpha = 0.4) +
+  theme_classic() +
+  labs(y = "Proportion of days skinny")
+
+
+
+```
 
